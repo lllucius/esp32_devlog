@@ -17,6 +17,10 @@
 
 #include <stdio.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * @brief Sets the log destination to a file.
  *
@@ -59,5 +63,9 @@ int devlog_set_file_destination(FILE *file);
  */
 
 int devlog_set_udp_destination(const char *addr, int port);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
