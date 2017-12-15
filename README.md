@@ -17,6 +17,9 @@ Example:
 
 void app_main(void)
 {
+
+    ... get wifi going ...
+
     devlog_set_udp_destination("192.168.2.1", 514);
 
     printf("This should show up on the local \"console\" and the remote syslog daemon\n");
