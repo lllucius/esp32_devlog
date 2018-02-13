@@ -22,6 +22,10 @@
 
 #include "devlog.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
 
 static FILE *dest_file = NULL;
@@ -41,38 +45,156 @@ static FILE *f_stderr = NULL;
 static FILE *f_fwdout = NULL;
 static FILE *f_fwderr = NULL;
 
+typedef struct
+{
+    int start;
+    int end;
+    int active;
+    int size;
+    char buffer[1];
+} ringbuf_t;
+
+void rb_put(ringbuf_t *rb, char c)
+{
+    if (rb)
+    {
+        rb->buffer[rb->end] = c;
+        rb->end = (rb->end + 1) % rb->size;
+
+        if (rb->active < rb->size)
+        {
+            rb->active++;
+        }
+        else
+        {
+            rb->start = (rb->start + 1) % rb->size;
+        }
+    }
+}
+
+static bool rb_get(ringbuf_t *rb, char *p)
+{
+    if (rb == NULL || rb->active == 0)
+    {
+        return false;
+    }
+
+    *p = rb->buffer[rb->start];
+    rb->start = (rb->start + 1) % rb->size;
+
+    rb->active--;
+
+    return true;
+}
+
+static int rb_get_all(ringbuf_t *rb, char *out, int size, bool clear)
+{
+    int cnt = 0;
+
+    if (rb != NULL && rb->active != 0)
+    {
+        int pos = rb->start;
+
+        for (int i = 0; i < rb->active; ++i)
+        {
+            if (i == size)
+            {
+                break;
+            }
+        
+            *out++ = rb->buffer[pos];
+            pos = (pos + 1) % rb->size;
+            cnt++;
+        }
+
+        if (clear)
+        {
+            rb->start = 0;
+            rb->end = 0;
+            rb->active = 0;
+        }
+    }
+
+    return cnt;
+}
+
+#if !defined(CONFIG_DEVLOG_EARLY_BUFFER_SIZE)
+#define CONFIG_DEVLOG_EARLY_BUFFER_SIZE 4096
+#endif
+
+#if CONFIG_DEVLOG_EARLY_BUFFER_SIZE
+
 // Will be returned to heap in DevLog ctor
-#define EARLY_BUFFER_SIZE 4096
 static struct
 {
-    int pos;
-    int dropped;
-    char buf[EARLY_BUFFER_SIZE];
-} early = {};
+    ringbuf_t rb;
+    char buffer[CONFIG_DEVLOG_EARLY_BUFFER_SIZE];
+}
+early =
+{
+    .rb =
+    {
+        .start = 0,
+        .end = 0,
+        .active = 0,
+        .size = CONFIG_DEVLOG_EARLY_BUFFER_SIZE,
+        .buffer = {}
+    },
+    .buffer = {}
+};
+static ringbuf_t *dest_rb = &early.rb;
 
 static void early_putc(char c)
 {
     if (vPortCPUAcquireMutexTimeout(&lock, portMUX_NO_TIMEOUT))
     {
-        if (early.pos >= 0 && early.pos < sizeof(early.buf))
+        if (c != '\r')
         {
-            if (c != '\r')
-            {
-                early.buf[early.pos++] = c;
-            }
-        }
-        else
-        {
-            early.dropped++;
+            rb_put(dest_rb, c);
         }
 
         vPortCPUReleaseMutex(&lock);
     }
 }
 
+#if CONFIG_FREERTOS_UNICORE
+
+extern void start_cpu0_default(void) IRAM_ATTR __attribute__((noreturn));
+void start_cpu0(void)
+{
+    ets_install_putc2(early_putc);
+    start_cpu0_default();
+}
+
+#else
+
+extern void start_cpu1_default(void) IRAM_ATTR __attribute__((noreturn));
+void start_cpu1(void)
+{
+    ets_install_putc2(early_putc);
+    start_cpu1_default();
+}
+#endif
+
+#else
+
+static ringbuf_t *dest_rb = NULL;
+
+#endif
+
 // Lock should already be acquired before calling this function
 static void devlog_putc(char c)
 {
+    if (c == '\r')
+    {
+        return;
+    }
+
+    if (dest_rb)
+    {
+         rb_put(dest_rb, c);
+    }
+
     if (log_buf == NULL || log_pos == log_len)
     {
         char *p = (char *) realloc(log_buf, log_len + 160);
@@ -82,10 +204,10 @@ static void devlog_putc(char c)
             log_len += 160;
         }
     }
- 
+
     if (log_buf)
     {
-        if (c != '\r' && log_pos < log_len)
+        if (log_pos < log_len)
         {
             log_buf[log_pos++] = c;
         }
@@ -215,30 +337,30 @@ static void devlog_full_init()
     {
         ets_install_putc2(NULL);
 
-        char tmp[64] = {0};
-        int len = early.pos;
+        int len = 0;
 
-        if (early.dropped)
-        {
-            len += sprintf(tmp,
-                           "\n*** %d bytes dropped during early logging\n",
-                           early.dropped);
-        }
+#if CONFIG_DEVLOG_EARLY_BUFFER_SIZE
+        len += dest_rb->active;
+#endif
 
         log_buf = (char *) malloc(len + 160);
         if (log_buf)
         {
-            memcpy(log_buf, early.buf, early.pos);
-            if (early.dropped)
-            {
-                strcpy(&log_buf[early.pos], tmp);
-            }
+
+#if CONFIG_DEVLOG_EARLY_BUFFER_SIZE
+            rb_get_all(dest_rb, log_buf, len, true);
+#endif
+
             log_pos = len;
             log_len = len + 160;
         }
 
+#if CONFIG_DEVLOG_EARLY_BUFFER_SIZE
         // Return the early logging storage to the heap
         heap_caps_add_region((intptr_t)&early, (intptr_t)&early + sizeof(early));
+
+        dest_rb = NULL;
+#endif
 
         ets_install_putc2(devlog_ets_putc);
 
@@ -275,63 +397,13 @@ static void devlog_full_init()
     }
 }
 
-class DevLog
+int devlog_set_file_destination(FILE *file)
 {
-public:
-    DevLog()
-    {
-        devlog_full_init();
-    }
-
-    virtual ~DevLog()
-    {
-    }
-};
-static DevLog initializer; 
-
-#if CONFIG_FREERTOS_UNICORE
-extern void start_cpu0_default(void) IRAM_ATTR __attribute__((noreturn));
-void start_cpu0(void)
-{
-    ets_install_putc2(early_putc);
-    start_cpu0_default();
-}
-#else
-extern void start_cpu1_default(void) IRAM_ATTR __attribute__((noreturn));
-void start_cpu1(void)
-{
-    ets_install_putc2(early_putc);
-    start_cpu1_default();
-}
-#endif
-
-int devlog_set_file_destination(const char *filename)
-{
-    FILE *f = NULL;
-
-    if (filename != NULL)
-    {
-        FILE *f = fopen(filename, "a");
-        if (f == NULL)
-        {
-            // errno should already be set
-            return -1;
-        }
-    }
-
-    FILE *old = NULL;
     if (vPortCPUAcquireMutexTimeout(&lock, portMUX_NO_TIMEOUT))
     {
-        old = dest_file;
-
-        dest_file = f;
+        dest_file = file;
 
         vPortCPUReleaseMutex(&lock);
-    }
-
-    if (old)
-    {
-        fclose(old);
     }
 
     return 0;
@@ -364,23 +436,92 @@ int devlog_set_udp_destination(const char *addr, int port)
         }
     }
 
-    struct udp_pcb *old = NULL;
     if (vPortCPUAcquireMutexTimeout(&lock, portMUX_NO_TIMEOUT))
     {
-        old = dest_pcb;
+        struct udp_pcb *old = dest_pcb;
 
         dest_pcb = pcb;        
         dest_ipa = ipa;
         dest_port = port;
 
         vPortCPUReleaseMutex(&lock);
-    }
 
-    if (old)
-    {
-        udp_remove(old);
+        if (old)
+        {
+            udp_remove(old);
+        }
     }
 
     return 0;
 }
+
+int devlog_set_retention_destination(int size)
+{
+    ringbuf_t *rb = (ringbuf_t *) malloc(sizeof(ringbuf_t) + size);
+    if (rb == NULL)
+    {
+        errno = ENOMEM;
+        return -1;
+    }
+
+    if (vPortCPUAcquireMutexTimeout(&lock, portMUX_NO_TIMEOUT))
+    {
+        rb->start = 0;
+        rb->end = 0;
+        rb->active = 0;
+        rb->size = size;
+
+        if (dest_rb)
+        {
+            char c;
+            while (rb_get(dest_rb, &c))
+            {
+                rb_put(rb, c);
+            }
+
+            free(dest_rb);
+        }
+        dest_rb = rb;
+
+        vPortCPUReleaseMutex(&lock);
+    }
+
+    return 0;
+}
+
+int devlog_get_retention_content(char *dest, int size, bool clear)
+{
+    int cnt = 0;
+
+    if (vPortCPUAcquireMutexTimeout(&lock, portMUX_NO_TIMEOUT))
+    {
+        cnt = rb_get_all(dest_rb, dest, size, clear);
+
+        vPortCPUReleaseMutex(&lock);
+    }
+
+    return cnt;
+}
+
+#ifdef __cplusplus
+}
+#endif
+
+// Singleton used to switch from early capture (if enabled) to full capture.
+// It gets initialzed during boot after the memory system has been initialized.
+class DevLog
+{
+public:
+    DevLog()
+    {
+        devlog_full_init();
+    }
+
+    virtual ~DevLog()
+    {
+    }
+};
+static DevLog initializer; 
+
+
 

@@ -45,7 +45,6 @@ int devlog_set_file_destination(FILE *file);
 /**
  * @brief Writes all log messages to the specified (UDP) IP and port. 
  *
- *
  * @param addr The IP address (xxx.xxx.xxx.xxx) of the destination host.  Pass
  *             NULL to unset a previously set destination.
  * @param port The destination port.
@@ -61,8 +60,49 @@ int devlog_set_file_destination(FILE *file);
  *      devlog_set_udp_destination(NULL, 0);
  * @endcode
  */
-
 int devlog_set_udp_destination(const char *addr, int port);
+
+/**
+ * @brief Sets the size of the retention buffer
+ *
+ * @param size The number of bytes to retain in a local buffer.  The
+ *             default is 0 which doesn't retain anything.
+ *
+ * @return 0 upon success, -1 for failure (check errno for reason)
+ *
+ * Example usage:
+ * @code{c}
+ *      // Set the destination
+ *      devlog_set_retention_destination(256);
+ *
+ *      // Retrieve the current buffer contents
+ *      char buffer[256];
+ *      devlog_get_retention_content(buffer, sizeof(buffer));
+ * @endcode
+ */
+
+int devlog_set_retention_destination(int size);
+
+/**
+ * @brief Retrieves the contents of the retention buffer
+ *
+ * @param dest  Pointer to the destination buffer.
+ * @param size  The size of the destination buffer.
+ * @param clear true=clear retention buffer, false=keep content
+ *
+ * @return Number of bytes copied, -1 for failure
+ *
+ * Example usage:
+ * @code{c}
+ *      // Set the destination
+ *      devlog_set_retention_destination(256);
+ *
+ *      // Retrieve the current buffer contents
+ *      char buffer[256];
+ *      devlog_get_retention_content(buffer, sizeof(buffer), false);
+ * @endcode
+ */
+int devlog_get_retention_content(char *dest, int size, bool clear);
 
 #ifdef __cplusplus
 }

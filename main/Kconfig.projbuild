@@ -1,0 +1,28 @@
+menu "DEVLOG Sample Configuration"
+
+config DEVLOG_WIFI_SSID
+    string "WIFI SSID"
+    default "myssid"
+    help
+    SSID of your WIFI access point.
+
+config DEVLOG_WIFI_PASS
+    string "WIFI Password"
+    default "mypass"
+    help
+    Password for your WIFI access point.
+
+config DEVLOG_SYSLOG_IP
+    string "Syslog IP"
+    default "192.168.1.1"
+    help
+        The syslog port to send log data.
+
+config DEVLOG_SYSLOG_PORT
+    int "Syslog Port"
+    default 514
+    help
+        The syslog port to send log data.
+
+endmenu
+
